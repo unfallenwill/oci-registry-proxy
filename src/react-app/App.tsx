@@ -11,8 +11,9 @@ interface Status {
 }
 
 function useOrigin() {
-	const [origin] = useState(() => window.location.origin);
-	return origin;
+	// Docker reference grammar has no scheme; commands must show the bare host.
+	const [host] = useState(() => window.location.origin.replace(/^https?:\/\//, ""));
+	return host;
 }
 
 function Code({ children }: { children: string }) {
