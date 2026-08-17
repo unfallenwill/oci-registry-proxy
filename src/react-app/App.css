@@ -1,0 +1,55 @@
+.page {
+	max-width: 760px;
+	margin: 0 auto;
+	padding: 4rem 1.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 1.5rem;
+}
+
+.tagline {
+	color: #6b7280;
+	margin: 0;
+}
+
+section h2 {
+	font-size: 1.05rem;
+	margin: 0 0 0.5rem;
+}
+
+pre {
+	background: #0b1021;
+	color: #dbe4ff;
+	border-radius: 8px;
+	padding: 0.9rem 1rem;
+	overflow-x: auto;
+	margin: 0;
+}
+
+.snippet {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.85rem;
+	line-height: 1.6;
+}
+
+.config {
+	border-collapse: collapse;
+	width: 100%;
+}
+
+.config th,
+.config td {
+	text-align: left;
+	padding: 0.35rem 0.75rem 0.35rem 0;
+	vertical-align: top;
+}
+
+.config th {
+	font-weight: 500;
+	color: #374151;
+	white-space: nowrap;
+}
+
+.error {
+	color: #b91c1c;
+}

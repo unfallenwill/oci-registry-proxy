@@ -1,0 +1,47 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "oci-registry-proxy",
+	"main": "./src/worker/index.ts",
+	"compatibility_date": "2025-10-08",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"vars": {
+		/** Registry used for bare "/v2/..." requests. Also always allowed in prefixed routes. */
+		"DEFAULT_REGISTRY": "docker.io",
+		/** Optional comma-separated allowlist for "/{registry}/v2/..." routes. Empty = allow all. */
+		"ALLOWED_REGISTRIES": "",
+		/** "true" rewrites cross-host upload Locations through /-/up/ instead of handing them to the client. */
+		"REWRITE_ALL_LOCATIONS": "false",
+		/** Comma-separated hosts to contact over plain http (insecure; localhost is always http). */
+		"INSECURE_REGISTRIES": ""
+	},
+	"assets": {
+		"directory": "./dist/client",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/v2",
+			"/v2/*",
+			"/token",
+			"/token/*",
+			"/-/up/*",
+			"/api/*",
+			"/*/v2",
+			"/*/v2/*"
+		]
+	}
+	/**
+	 * Secrets:
+	 *   REGISTRY_AUTHS — JSON map of upstream credentials, e.g.
+	 *     {"ghcr.io": "user:pat", "registry.example.com:5000": "user:pass"}
+	 *   Set with: npx wrangler secret put REGISTRY_AUTHS
+	 */
+}
