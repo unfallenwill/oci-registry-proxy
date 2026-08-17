@@ -42,6 +42,14 @@ curl https://proxy.example.com/ghcr.io/v2/<repo>/manifests/latest
   through the proxy; with `REWRITE_ALL_LOCATIONS=true` cross-host Locations
   are relayed via `/-/up/{base64url}` instead of leaking upstream hosts.
 - **GET/HEAD retry** — one retry on transient network failures.
+- **Blob edge cache** — blobs are digest-addressed and immutable, so GET/HEAD
+  responses are cached in Cloudflare's edge cache (Cache API, free, no
+  capacity management). Repeat pulls are served from the edge and never touch
+  the upstream registry (dodging Docker Hub rate limits). The cache is keyed
+  by registry + repo + digest and **disabled per-registry when upstream
+  credentials are configured** (`REGISTRY_AUTHS`), so credential-protected
+  content can never become publicly retrievable. Range requests bypass the
+  cache. Objects above the 512 MB edge-cache limit simply stay uncached.
 
 ## Configuration (`wrangler.json` vars)
 
@@ -51,6 +59,7 @@ curl https://proxy.example.com/ghcr.io/v2/<repo>/manifests/latest
 | `ALLOWED_REGISTRIES` | `""` (all) | Comma-separated allowlist for `/{registry}/v2/...` and embedded addressing. |
 | `REWRITE_ALL_LOCATIONS` | `false` | Relay every upstream Location through the proxy. |
 | `INSECURE_REGISTRIES` | `""` | Comma-separated hosts contacted over plain http (localhost always is). |
+| `BLOB_CACHE` | `"true"` | Edge-cache blobs (GET/HEAD) from registries without configured credentials. Set `"false"` to disable. |
 
 Upstream credentials (server-side Basic auth used when the client sends none):
 

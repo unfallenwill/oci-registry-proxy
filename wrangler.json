@@ -22,7 +22,9 @@
 		/** "true" rewrites cross-host upload Locations through /-/up/ instead of handing them to the client. */
 		"REWRITE_ALL_LOCATIONS": "false",
 		/** Comma-separated hosts to contact over plain http (insecure; localhost is always http). */
-		"INSECURE_REGISTRIES": ""
+		"INSECURE_REGISTRIES": "",
+		/** "false" disables edge caching of blobs from registries without REGISTRY_AUTHS credentials. */
+		"BLOB_CACHE": "true"
 	},
 	"assets": {
 		"directory": "./dist/client",

@@ -6,6 +6,7 @@
 
 import type { Context } from "hono";
 import {
+	blobCacheEnabled,
 	cachedToken,
 	DEFAULT_REGISTRY,
 	list,
@@ -58,6 +59,12 @@ const RES_DROP: Record<string, true> = {
 	"report-endpoint": true,
 	nel: true,
 };
+
+/** Blob fetch ("/v2/{name}/blobs/{digest}"): digest-addressed content is immutable. */
+const BLOB_PATH_RE = /^\/v2\/.+\/blobs\/[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-zA-Z0-9=_-]+$/;
+
+/** Cached-blob edge TTL; digests never change, so this only bounds entry freshness bookkeeping. */
+const BLOB_CACHE_SECONDS = 30 * 24 * 60 * 60;
 
 function ociError(status: number, code: string, message: string, detail?: unknown): Response {
 	return Response.json(
@@ -223,9 +230,9 @@ export function registryProxy(opts: { fromPath: boolean }) {
 		const method = c.req.method.toUpperCase();
 		const mutating = method !== "GET" && method !== "HEAD";
 		const headers = forwardRequestHeaders(c.req.raw.headers);
-		if (!headers.has("authorization")) {
-			const injected = upstreamBasicAuth(upstream, env);
-			if (injected) headers.set("authorization", injected);
+		const injectedAuth = upstreamBasicAuth(upstream, env);
+		if (!headers.has("authorization") && injectedAuth) {
+			headers.set("authorization", injectedAuth);
 		}
 		// The bare anonymous /v2/ ping must not commit to the default registry's
 		// auth realm: under embedded addressing the real registry only appears
@@ -274,6 +281,34 @@ export function registryProxy(opts: { fromPath: boolean }) {
 			});
 		}
 
+		// Blob edge cache (Cloudflare Cache API). Blob digests are immutable, so
+		// a hit is valid forever. Entries are keyed by registry + canonical repo
+		// path + digest (not by client auth, which would fragment the cache) and
+		// are served to every client of this proxy — so the cache is only used
+		// for registries without configured upstream credentials: content pulled
+		// through REGISTRY_AUTHS must never become publicly retrievable. Range
+		// requests bypass it (a stored entry would answer 200-full, not 206).
+		let cacheKey: Request | null = null;
+		if (
+			blobCacheEnabled(env) &&
+			injectedAuth === null &&
+			(method === "GET" || method === "HEAD") &&
+			!c.req.header("range") &&
+			BLOB_PATH_RE.test(upstreamPath)
+		) {
+			cacheKey = new Request(new URL(`/-/cache/${upstream.key}${upstreamPath}`, inUrl.origin), {
+				method: "GET",
+			});
+			const hit = await caches.default.match(cacheKey);
+			if (hit) {
+				if (method === "HEAD") {
+					hit.body?.cancel();
+					return new Response(null, { status: hit.status, headers: hit.headers });
+				}
+				return hit;
+			}
+		}
+
 		const send = () =>
 			fetch(target, {
 				method,
@@ -296,6 +331,23 @@ export function registryProxy(opts: { fromPath: boolean }) {
 			} catch (e2) {
 				return unavailable(e2);
 			}
+		}
+
+		// Fill the blob cache while streaming the same bytes to the client. The
+		// put() promise runs detached via waitUntil; failures (e.g. objects over
+		// the 512 MB edge-cache limit) degrade to an uncached response.
+		if (cacheKey !== null && method === "GET" && res.status === 200 && res.body) {
+			const [toClient, toCache] = res.body.tee();
+			const cacheHeaders = copyResponseHeaders(res.headers);
+			cacheHeaders.delete("set-cookie");
+			cacheHeaders.delete("vary");
+			cacheHeaders.set("cache-control", `public, max-age=${BLOB_CACHE_SECONDS}`);
+			c.executionCtx.waitUntil(
+				caches.default
+					.put(cacheKey, new Response(toCache, { status: 200, headers: cacheHeaders }))
+					.catch(() => {}),
+			);
+			res = new Response(toClient, { status: res.status, statusText: res.statusText, headers: res.headers });
 		}
 
 		if (res.status === 401) {
@@ -471,6 +523,7 @@ export async function statusHandler(c: AppContext): Promise<Response> {
 			rewriteAllLocations: relayEnabled(env),
 			upstreamCredentialsConfigured: Boolean(env.REGISTRY_AUTHS),
 			insecureRegistries: list(env.INSECURE_REGISTRIES),
+			blobCache: blobCacheEnabled(env),
 		},
 		{ headers: { "cache-control": "no-store" } },
 	);

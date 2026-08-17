@@ -8,6 +8,7 @@ interface Status {
 	rewriteAllLocations: boolean;
 	upstreamCredentialsConfigured: boolean;
 	insecureRegistries: string[];
+	blobCache: boolean;
 }
 
 // Docker reference grammar has no scheme; commands must show the bare host.
@@ -87,6 +88,10 @@ function App() {
 							<tr>
 								<th>Upstream credentials</th>
 								<td>{status.upstreamCredentialsConfigured ? "configured (REGISTRY_AUTHS)" : "client credentials only"}</td>
+							</tr>
+							<tr>
+								<th>Blob edge cache</th>
+								<td>{status.blobCache ? "enabled (public registries)" : "disabled"}</td>
 							</tr>
 							{status.insecureRegistries.length > 0 && (
 								<tr>

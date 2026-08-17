@@ -118,6 +118,16 @@ for (const [label, buf] of [["config", configBuf], ["layer", layerBuf]]) {
 	);
 }
 
+// 4b. Repeat blob pull is served from the edge cache (the mock never sets
+// cache-control, so the rewritten max-age header proves a cache hit).
+{
+	res = await fetch(`${base}/v2/hello/blobs/${sha256(layerBuf)}`, { headers: auth });
+	const cached =
+		(res.headers.get("cf-cache-status") ?? "").toUpperCase() === "HIT" ||
+		/max-age=/.test(res.headers.get("cache-control") ?? "");
+	check("repeat blob pull served from edge cache", res.status === 200 && cached, res.headers.get("cf-cache-status") ?? "");
+}
+
 // 5. Range request on a blob
 {
 	const digest = sha256(layerBuf);

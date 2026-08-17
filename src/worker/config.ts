@@ -11,6 +11,8 @@ export interface ProxyEnv {
 	INSECURE_REGISTRIES?: string;
 	/** Secret JSON: { "registry.example.com": "user:password", ... } */
 	REGISTRY_AUTHS?: string;
+	/** "false" disables edge caching of blobs from registries without configured credentials. */
+	BLOB_CACHE?: string;
 }
 
 export interface Upstream {
@@ -67,6 +69,10 @@ export function list(envValue: string | undefined): string[] {
 
 export function relayEnabled(env: ProxyEnv): boolean {
 	return env.REWRITE_ALL_LOCATIONS === "true";
+}
+
+export function blobCacheEnabled(env: ProxyEnv): boolean {
+	return env.BLOB_CACHE !== "false";
 }
 
 /**
