@@ -42,6 +42,8 @@ function blobPath(digest) {
 	return join(blobsDir, digest.replace(":", "-"));
 }
 
+const sha256 = (buf) => "sha256:" + createHash("sha256").update(buf).digest("hex");
+
 function send(res, status, headers, body) {
 	res.writeHead(status, headers);
 	if (body) res.write(body);
@@ -67,7 +69,7 @@ function unauthorized(req, res) {
 	return true;
 }
 
-/** Consume the request body into memory, hashing chunks along the way. */
+/** Consume the request body into memory, streaming each chunk to onChunk. */
 function readBody(req, onChunk) {
 	return new Promise((resolve) => {
 		const chunks = [];
@@ -116,7 +118,7 @@ const server = createServer((req, res) => {
 			200,
 			{
 				"content-type": readFileSync(`${file}.ct`, "utf8").trim(),
-				"docker-content-digest": "sha256:" + createHash("sha256").update(data).digest("hex"),
+				"docker-content-digest": sha256(data),
 				"content-length": String(data.length),
 			},
 			req.method === "HEAD" ? undefined : data,
@@ -135,7 +137,7 @@ const server = createServer((req, res) => {
 				`${join(dir, ref)}.ct`,
 				req.headers["content-type"] ?? "application/vnd.oci.image.manifest.v1+json",
 			);
-			const digest = "sha256:" + createHash("sha256").update(data).digest("hex");
+			const digest = sha256(data);
 			send(res, 201, {
 				location: `/v2/${name}/manifests/${ref}`,
 				"docker-content-digest": digest,
@@ -189,9 +191,8 @@ const server = createServer((req, res) => {
 		const digest = url.searchParams.get("digest");
 		if (digest) {
 			// Single-POST monolithic upload
-			const hash = createHash("sha256");
-			readBody(req, (c) => hash.update(c)).then((data) => {
-				if ("sha256:" + hash.digest("hex") !== digest) {
+			readBody(req).then((data) => {
+				if (sha256(data) !== digest) {
 					json(res, 400, { errors: [{ code: "DIGEST_INVALID", message: "digest mismatch" }] });
 					return;
 				}
@@ -216,16 +217,11 @@ const server = createServer((req, res) => {
 		const [, name, id] = m;
 		const file = join(store, id);
 		const appending = existsSync(file);
-		const hash = appending
-			? createHash("sha256").update(readFileSync(file))
-			: createHash("sha256");
+		const existing = appending ? readFileSync(file) : null;
 		const ws = createWriteStream(file, { flags: appending ? "a" : "w" });
-		readBody(req, (c) => {
-			ws.write(c);
-			hash.update(c);
-		}).then(() => {
+		readBody(req, (c) => ws.write(c)).then((data) => {
 			new Promise((resolve) => ws.end(resolve)).then(() => {
-				const digest = "sha256:" + hash.digest("hex");
+				const digest = sha256(existing ? Buffer.concat([existing, data]) : data);
 				if (req.method === "PUT") {
 					const want = url.searchParams.get("digest");
 					if (want && want !== digest) {

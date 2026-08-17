@@ -22,29 +22,32 @@ function check(name, ok, extra = "") {
 
 const sha256 = (buf) => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
+const makeManifest = (configBuf, layerBuf) =>
+	Buffer.from(
+		JSON.stringify({
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.manifest.v1+json",
+			config: {
+				mediaType: "application/vnd.oci.image.config.v1+json",
+				digest: sha256(configBuf),
+				size: configBuf.length,
+			},
+			layers: [
+				{
+					mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+					digest: sha256(layerBuf),
+					size: layerBuf.length,
+				},
+			],
+		}),
+	);
+
 // --- Seed the mock registry directly (as if the image was pushed before) ---
 const configBuf = Buffer.from(
 	JSON.stringify({ architecture: "amd64", os: "linux", rootfs: { type: "layers", diff_ids: [] } }),
 );
 const layerBuf = Buffer.from("e2e-test-layer-content");
-const manifestBuf = Buffer.from(
-	JSON.stringify({
-		schemaVersion: 2,
-		mediaType: "application/vnd.oci.image.manifest.v1+json",
-		config: {
-			mediaType: "application/vnd.oci.image.config.v1+json",
-			digest: sha256(configBuf),
-			size: configBuf.length,
-		},
-		layers: [
-			{
-				mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
-				digest: sha256(layerBuf),
-				size: layerBuf.length,
-			},
-		],
-	}),
-);
+const manifestBuf = makeManifest(configBuf, layerBuf);
 const seedHeaders = { authorization: "Bearer seed", "content-type": "application/octet-stream" };
 for (const [buf, kind, ref] of [
 	[configBuf, "blob", sha256(configBuf)],
@@ -131,14 +134,7 @@ console.log("push flow:");
 
 const newLayer = Buffer.from("pushed-layer-payload-" + Date.now());
 const newConfig = Buffer.from(JSON.stringify({ architecture: "arm64", os: "linux", rootfs: { type: "layers", diff_ids: [] } }));
-const newManifest = Buffer.from(
-	JSON.stringify({
-		schemaVersion: 2,
-		mediaType: "application/vnd.oci.image.manifest.v1+json",
-		config: { mediaType: "application/vnd.oci.image.config.v1+json", digest: sha256(newConfig), size: newConfig.length },
-		layers: [{ mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: sha256(newLayer), size: newLayer.length }],
-	}),
-);
+const newManifest = makeManifest(newConfig, newLayer);
 
 // 1. Start upload session
 res = await fetch(`${base}/v2/hello/blobs/uploads/`, { method: "POST", headers: auth });

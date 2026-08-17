@@ -10,11 +10,8 @@ interface Status {
 	insecureRegistries: string[];
 }
 
-function useOrigin() {
-	// Docker reference grammar has no scheme; commands must show the bare host.
-	const [host] = useState(() => window.location.origin.replace(/^https?:\/\//, ""));
-	return host;
-}
+// Docker reference grammar has no scheme; commands must show the bare host.
+const registryHost = window.location.origin.replace(/^https?:\/\//, "");
 
 function Code({ children }: { children: string }) {
 	return (
@@ -26,7 +23,7 @@ function Code({ children }: { children: string }) {
 }
 
 function App() {
-	const origin = useOrigin();
+	
 	const [status, setStatus] = useState<Status | null>(null);
 	const [error, setError] = useState("");
 
@@ -48,18 +45,18 @@ function App() {
 				<h2>Pull</h2>
 				<pre>
 					<Code>{`# Docker Hub (default registry)`}</Code>
-					<Code>{`docker pull ${origin || "<proxy-host>"}/library/nginx:latest`}</Code>
+					<Code>{`docker pull ${registryHost || "<proxy-host>"}/library/nginx:latest`}</Code>
 					<Code>{`# Any registry, via path prefix`}</Code>
-					<Code>{`docker pull ${origin || "<proxy-host>"}/ghcr.io/distribution/distribution:latest`}</Code>
+					<Code>{`docker pull ${registryHost || "<proxy-host>"}/ghcr.io/distribution/distribution:latest`}</Code>
 				</pre>
 			</section>
 
 			<section>
 				<h2>Push</h2>
 				<pre>
-					<Code>{`docker login ${origin || "<proxy-host>"}   # upstream credentials`}</Code>
-					<Code>{`docker tag nginx:latest ${origin || "<proxy-host>"}/username/nginx:latest`}</Code>
-					<Code>{`docker push ${origin || "<proxy-host>"}/username/nginx:latest`}</Code>
+					<Code>{`docker login ${registryHost || "<proxy-host>"}   # upstream credentials`}</Code>
+					<Code>{`docker tag nginx:latest ${registryHost || "<proxy-host>"}/username/nginx:latest`}</Code>
+					<Code>{`docker push ${registryHost || "<proxy-host>"}/username/nginx:latest`}</Code>
 				</pre>
 			</section>
 

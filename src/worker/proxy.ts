@@ -7,6 +7,8 @@
 import type { Context } from "hono";
 import {
 	cachedToken,
+	DEFAULT_REGISTRY,
+	list,
 	looksLikeRegistry,
 	parseRegistry,
 	parseWwwAuthenticate,
@@ -60,7 +62,7 @@ const RES_DROP: Record<string, true> = {
 function ociError(status: number, code: string, message: string, detail?: unknown): Response {
 	return Response.json(
 		{ errors: [{ code, message, ...(detail !== undefined ? { detail } : {}) }] },
-		{ status, headers: { "content-type": "application/json", "cache-control": "no-store" } },
+		{ status, headers: { "cache-control": "no-store" } },
 	);
 }
 
@@ -93,11 +95,17 @@ function forwardRequestHeaders(src: Headers): Headers {
  * Docker Hub semantics: an official-image style single-segment repository
  * ("nginx") lives under the "library" namespace.
  */
-export function dockerizePath(path: string): string {
+function dockerizePath(path: string): string {
 	return path.replace(
 		/^\/v2\/([^/_][^/]*)\/(manifests|blobs|tags|referrers)(?=\/|$)/,
 		"/v2/library/$1/$2",
 	);
+}
+
+function serializeChallenge(params: Record<string, string>): string {
+	return `Bearer ${Object.entries(params)
+		.map(([k, v]) => `${k}="${v}"`)
+		.join(", ")}`;
 }
 
 interface RewriteCtx {
@@ -118,7 +126,7 @@ function normalizeHostPort(host: string, scheme: string): string {
 }
 
 /** Rewrite an upstream upload/redirect Location to point back through the proxy. */
-export function rewriteLocation(location: string, ctx: RewriteCtx): string {
+function rewriteLocation(location: string, ctx: RewriteCtx): string {
 	let url: URL;
 	try {
 		url = new URL(location, `${ctx.upstream.scheme}://${ctx.upstream.host}`);
@@ -136,22 +144,23 @@ export function rewriteLocation(location: string, ctx: RewriteCtx): string {
 }
 
 /** Point the Bearer challenge realm at our /token relay so auth flows through the proxy too. */
-export function rewriteChallenge(wwwAuthenticate: string, origin: string, registryKey: string): string {
+function rewriteChallenge(wwwAuthenticate: string, origin: string, registryKey: string): string {
 	const parsed = parseWwwAuthenticate(wwwAuthenticate);
 	if (!parsed || parsed.scheme !== "bearer" || !parsed.params.realm) return wwwAuthenticate;
-	const params = { ...parsed.params, realm: `${origin}/token/${registryKey}` };
-	return `Bearer ${Object.entries(params)
-		.map(([k, v]) => `${k}="${v}"`)
-		.join(", ")}`;
+	return serializeChallenge({ ...parsed.params, realm: `${origin}/token/${registryKey}` });
+}
+
+function copyResponseHeaders(src: Headers): Headers {
+	const out = new Headers();
+	src.forEach((value, key) => {
+		const k = key.toLowerCase();
+		if (RES_DROP[k] !== true && !k.startsWith("cf-")) out.append(key, value);
+	});
+	return out;
 }
 
 function wrapUpstreamResponse(res: Response, ctx: RewriteCtx): Response {
-	const headers = new Headers();
-	res.headers.forEach((value, key) => {
-		const k = key.toLowerCase();
-		if (RES_DROP[k] === true || k.startsWith("cf-")) return;
-		headers.append(key, value);
-	});
+	const headers = copyResponseHeaders(res.headers);
 	const location = headers.get("location");
 	if (location) headers.set("location", rewriteLocation(location, ctx));
 	if (res.status === 401) {
@@ -205,6 +214,8 @@ export function registryProxy(opts: { fromPath: boolean }) {
 		} catch (e) {
 			return toRegistryError(e);
 		}
+		const unavailable = (e: unknown) =>
+			ociError(502, "UNAVAILABLE", `failed to reach upstream ${upstream.host}: ${String(e)}`);
 
 		const upstreamPath = upstream.isDockerFamily ? dockerizePath(apiPath) : apiPath;
 		const target = `${upstream.scheme}://${upstream.host}${upstreamPath}${inUrl.search}`;
@@ -233,21 +244,21 @@ export function registryProxy(opts: { fromPath: boolean }) {
 					redirect: "follow",
 				});
 			} catch (e) {
-				return ociError(502, "UNAVAILABLE", `failed to reach upstream ${upstream.host}: ${String(e)}`);
+				return unavailable(e);
 			}
 			const challenge = ping.headers.get("www-authenticate");
 			const parsed = challenge === null ? null : parseWwwAuthenticate(challenge);
 			if (ping.status === 401 && parsed?.scheme === "bearer") {
 				ping.body?.cancel();
-				const params = { ...parsed.params, realm: `${inUrl.origin}/token/-` };
 				return new Response(
 					JSON.stringify({ errors: [{ code: "UNAUTHORIZED", message: "authentication required" }] }),
 					{
 						status: 401,
 						headers: {
-							"www-authenticate": `Bearer ${Object.entries(params)
-								.map(([k, v]) => `${k}="${v}"`)
-								.join(", ")}`,
+							"www-authenticate": serializeChallenge({
+								...parsed.params,
+								realm: `${inUrl.origin}/token/-`,
+							}),
 							"content-type": "application/json",
 							"docker-distribution-api-version": "registry/2.0",
 							"cache-control": "no-store",
@@ -278,12 +289,12 @@ export function registryProxy(opts: { fromPath: boolean }) {
 			// Bodyless GET/HEAD is idempotent; one retry absorbs transient edge
 			// network drops (blob CDN redirects are flaky from local dev).
 			if (mutating) {
-				return ociError(502, "UNAVAILABLE", `failed to reach upstream ${upstream.host}: ${String(e)}`);
+				return unavailable(e);
 			}
 			try {
 				res = await send();
 			} catch (e2) {
-				return ociError(502, "UNAVAILABLE", `failed to reach upstream ${upstream.host}: ${String(e2)}`);
+				return unavailable(e2);
 			}
 		}
 
@@ -369,7 +380,7 @@ export async function tokenRelay(c: AppContext): Promise<Response> {
 	}
 
 	const auth = c.req.header("authorization") ?? upstreamBasicAuth(upstream, env);
-	const cacheKey = `${upstream.key}|${inUrl.search}|${auth ?? ""}`;
+	const cacheKey = `${upstream.key}|${[...inUrl.searchParams].sort().map(([k, v]) => `${k}=${v}`).join("&")}|${auth ?? ""}`;
 	const hit = cachedToken(cacheKey);
 	if (hit) {
 		return new Response(hit.body, {
@@ -446,30 +457,20 @@ export async function upstreamRelay(c: AppContext): Promise<Response> {
 		return ociError(502, "UNAVAILABLE", `relay failed: ${String(e)}`);
 	}
 
-	const headers = new Headers();
-	res.headers.forEach((value, key) => {
-		if (RES_DROP[key.toLowerCase()] !== true) headers.append(key, value);
-	});
+	const headers = copyResponseHeaders(res.headers);
 	return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
 export async function statusHandler(c: AppContext): Promise<Response> {
 	const env = c.env;
-	const allowed = (env.ALLOWED_REGISTRIES ?? "")
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean);
 	return Response.json(
 		{
 			service: "oci-registry-proxy",
-			defaultRegistry: env.DEFAULT_REGISTRY ?? "docker.io",
-			allowedRegistries: allowed,
+			defaultRegistry: env.DEFAULT_REGISTRY ?? DEFAULT_REGISTRY,
+			allowedRegistries: list(env.ALLOWED_REGISTRIES),
 			rewriteAllLocations: relayEnabled(env),
 			upstreamCredentialsConfigured: Boolean(env.REGISTRY_AUTHS),
-			insecureRegistries: (env.INSECURE_REGISTRIES ?? "")
-				.split(",")
-				.map((s) => s.trim())
-				.filter(Boolean),
+			insecureRegistries: list(env.INSECURE_REGISTRIES),
 		},
 		{ headers: { "cache-control": "no-store" } },
 	);

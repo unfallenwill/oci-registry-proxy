@@ -50,11 +50,19 @@ const LOCAL_HOSTS: Record<string, true> = {
 	"::1": true,
 };
 
-function list(envValue: string | undefined): string[] {
-	return (envValue ?? "")
-		.split(",")
-		.map((s) => s.trim().toLowerCase())
-		.filter(Boolean);
+export const DEFAULT_REGISTRY = "docker.io";
+
+const listCache = new Map<string, string[]>();
+
+export function list(envValue: string | undefined): string[] {
+	// Env vars are static per isolate, so memoizing by source string is safe.
+	const source = envValue ?? "";
+	let cached = listCache.get(source);
+	if (!cached) {
+		cached = source.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+		listCache.set(source, cached);
+	}
+	return cached;
 }
 
 export function relayEnabled(env: ProxyEnv): boolean {
@@ -81,7 +89,8 @@ export function parseRegistry(
 	env: ProxyEnv,
 	opts: { fromPath?: boolean } = {},
 ): Upstream {
-	const name = (raw ?? env.DEFAULT_REGISTRY ?? "docker.io").toLowerCase();
+	const defaultName = (env.DEFAULT_REGISTRY ?? DEFAULT_REGISTRY).toLowerCase();
+	const name = (raw ?? defaultName).toLowerCase();
 	if (!HOST_RE.test(name)) {
 		throw new RegistryError(400, "NAME_INVALID", `invalid registry name: ${name}`);
 	}
@@ -96,7 +105,7 @@ export function parseRegistry(
 
 	if (opts.fromPath) {
 		const allowed = list(env.ALLOWED_REGISTRIES);
-		const isDefault = name === (env.DEFAULT_REGISTRY ?? "docker.io").toLowerCase();
+		const isDefault = name === defaultName;
 		if (allowed.length > 0 && !isDefault && !allowed.includes(name) && !allowed.includes(bareHost)) {
 			throw new RegistryError(
 				403,
@@ -119,7 +128,7 @@ export function upstreamBasicAuth(upstream: Upstream, env: ProxyEnv): string | n
 		const map = new Map<string, string>();
 		try {
 			for (const [k, v] of Object.entries(JSON.parse(source) as Record<string, unknown>)) {
-				if (typeof v === "string" && v.length > 0) map.set(k.toLowerCase(), v);
+				if (typeof v === "string" && v.length > 0) map.set(k.toLowerCase(), `Basic ${btoa(v)}`);
 			}
 		} catch {
 			// Malformed secret: behave as if unset.
@@ -127,15 +136,8 @@ export function upstreamBasicAuth(upstream: Upstream, env: ProxyEnv): string | n
 		}
 		parsedAuths = { source, map };
 	}
-	const credentials =
-		parsedAuths.map.get(upstream.key) ?? parsedAuths.map.get(upstream.host);
-	if (!credentials) return null;
-	return `Basic ${btoa(credentials)}`;
+	return parsedAuths.map.get(upstream.key) ?? parsedAuths.map.get(upstream.host) ?? null;
 }
-
-// ---------------------------------------------------------------------------
-// WWW-Authenticate parsing and realm discovery
-// ---------------------------------------------------------------------------
 
 export interface Challenge {
 	scheme: string;
@@ -166,12 +168,14 @@ const BUILTIN_REALMS: Record<string, RealmInfo> = {
 
 const realmCache = new Map<string, RealmInfo | null>();
 
+function evictOldest<T>(map: Map<string, T>): void {
+	const first = map.keys().next().value;
+	if (first !== undefined) map.delete(first);
+}
+
 function rememberRealmInfo(upstream: Upstream, info: RealmInfo | null) {
 	realmCache.set(upstream.key, info);
-	if (realmCache.size > 128) {
-		const first = realmCache.keys().next().value;
-		if (first !== undefined) realmCache.delete(first);
-	}
+	if (realmCache.size > 128) evictOldest(realmCache);
 }
 
 /** Cache a realm learned from an upstream 401 so /token/{key} can use it. */
@@ -214,9 +218,7 @@ export async function resolveRealm(upstream: Upstream): Promise<RealmInfo | null
 	return info;
 }
 
-// ---------------------------------------------------------------------------
 // Token cache (keyed by registry + query + credentials, isolate-local)
-// ---------------------------------------------------------------------------
 
 interface TokenEntry {
 	body: string;
@@ -247,8 +249,5 @@ export function rememberToken(key: string, body: string) {
 	}
 	const lifetime = Math.max(15, ttl - 45);
 	tokenCache.set(key, { body, expiresAt: Date.now() + lifetime * 1000 });
-	if (tokenCache.size > 256) {
-		const first = tokenCache.keys().next().value;
-		if (first !== undefined) tokenCache.delete(first);
-	}
+	if (tokenCache.size > 256) evictOldest(tokenCache);
 }
