@@ -45,11 +45,14 @@ curl https://proxy.example.com/ghcr.io/v2/<repo>/manifests/latest
 - **Blob edge cache** — blobs are digest-addressed and immutable, so GET/HEAD
   responses are cached in Cloudflare's edge cache (Cache API, free, no
   capacity management). Repeat pulls are served from the edge and never touch
-  the upstream registry (dodging Docker Hub rate limits). The cache is keyed
-  by registry + repo + digest and **disabled per-registry when upstream
-  credentials are configured** (`REGISTRY_AUTHS`), so credential-protected
-  content can never become publicly retrievable. Range requests bypass the
-  cache. Objects above the 512 MB edge-cache limit simply stay uncached.
+  the upstream registry. The cache is keyed by registry + repo + digest and
+  **disabled per-registry when upstream credentials are configured**
+  (`REGISTRY_AUTHS`), so credential-protected content can never become
+  publicly retrievable. Registries that already serve blobs from
+  Cloudflare's own edge (Docker Hub, Quay) are excluded — proxy-caching them
+  only adds a Worker hop and a cache lookup without shortening any path.
+  Range requests bypass the cache. Objects above the 512 MB edge-cache limit
+  simply stay uncached.
 
 ## Configuration (`wrangler.json` vars)
 

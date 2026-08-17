@@ -6,6 +6,7 @@
 
 import type { Context } from "hono";
 import {
+	blobCacheable,
 	blobCacheEnabled,
 	cachedToken,
 	DEFAULT_REGISTRY,
@@ -287,10 +288,13 @@ export function registryProxy(opts: { fromPath: boolean }) {
 		// are served to every client of this proxy — so the cache is only used
 		// for registries without configured upstream credentials: content pulled
 		// through REGISTRY_AUTHS must never become publicly retrievable. Range
-		// requests bypass it (a stored entry would answer 200-full, not 206).
+		// requests bypass it (a stored entry would answer 200-full, not 206), as
+		// do registries already serving blobs from Cloudflare's edge
+		// (blobCacheable): proxy-caching those only adds a hop and a lookup.
 		let cacheKey: Request | null = null;
 		if (
 			blobCacheEnabled(env) &&
+			blobCacheable(upstream) &&
 			injectedAuth === null &&
 			(method === "GET" || method === "HEAD") &&
 			!c.req.header("range") &&

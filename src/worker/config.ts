@@ -76,6 +76,24 @@ export function blobCacheEnabled(env: ProxyEnv): boolean {
 }
 
 /**
+ * Registries that serve blobs from Cloudflare's own edge (307 to
+ * *.cloudflare.docker.com etc). Proxy-caching those adds a Worker hop and a
+ * cache lookup without shortening any path, so they are excluded; the cache
+ * pays off only for registries whose blobs must cross the open internet.
+ */
+const CF_EDGE_BLOBS: Record<string, true> = {
+	"docker.io": true,
+	"index.docker.io": true,
+	"registry-1.docker.io": true,
+	"registry.hub.docker.com": true,
+	"quay.io": true,
+};
+
+export function blobCacheable(upstream: Upstream): boolean {
+	return CF_EDGE_BLOBS[upstream.key] !== true && CF_EDGE_BLOBS[upstream.host] !== true;
+}
+
+/**
  * Does a path segment look like an upstream registry host (rather than a
  * repository name component)? Dots/colons distinguish registry hosts from
  * repo path segments in the "/v2/{registry}/{repo}/..." addressing that
