@@ -1,0 +1,10 @@
+# Copy to .dev.vars for local development (git-ignored).
+# Open proxy for the mock registries used by scripts/e2e.mjs:
+PROXY_AUTH=off
+ALLOWED_REGISTRIES=localhost,127.0.0.1,e2e.test
+INSECURE_REGISTRIES=localhost,127.0.0.1
+# Mirror group exercising the fallback path: dead member first, live mock second.
+MIRROR_GROUPS={"e2e.test":["127.0.0.1:5999","127.0.0.1:5100"]}
+
+# Alternative: test the authenticated flow locally by setting a token instead:
+# PROXY_TOKEN=dev-token

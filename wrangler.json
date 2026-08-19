@@ -1,7 +1,3 @@
-/**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
- */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "oci-registry-proxy",
@@ -15,15 +11,21 @@
 	},
 	"upload_source_maps": true,
 	"vars": {
-		/** Registry used for bare "/v2/..." requests. Also always allowed in prefixed routes. */
+		/** Registry used for bare "/v2/..." requests. Also always allowed elsewhere. */
 		"DEFAULT_REGISTRY": "docker.io",
-		/** Optional comma-separated allowlist for "/{registry}/v2/..." routes. Empty = allow all. */
+		/** Optional comma-separated allowlist for client-chosen registries. Empty = allow all. */
 		"ALLOWED_REGISTRIES": "",
-		/** "true" rewrites cross-host upload Locations through /-/up/ instead of handing them to the client. */
-		"REWRITE_ALL_LOCATIONS": "false",
+		/** Mirror groups: JSON mapping registry name -> ordered member list.
+		 *  Members are tried in order for tag lookups and raced for digest lookups.
+		 *  Example: {"docker.io": ["docker.io", "docker.m.daocloud.io"]} */
+		"MIRROR_GROUPS": "",
 		/** Comma-separated hosts to contact over plain http (insecure; localhost is always http). */
 		"INSECURE_REGISTRIES": "",
-		/** "false" disables edge caching of blobs from registries without REGISTRY_AUTHS credentials. */
+		/** "off" disables proxy authentication (local development only). */
+		"PROXY_AUTH": "",
+		/** Seconds a tag-addressed manifest may be served from the edge cache. */
+		"MANIFEST_TAG_TTL": "120",
+		/** "false" disables the edge cache. */
 		"BLOB_CACHE": "true"
 	},
 	"assets": {
@@ -32,9 +34,8 @@
 		"run_worker_first": [
 			"/v2",
 			"/v2/*",
-			"/token",
-			"/token/*",
-			"/-/up/*",
+			"/-/auth",
+			"/-/auth/*",
 			"/api/*",
 			"/*/v2",
 			"/*/v2/*"
@@ -42,8 +43,9 @@
 	}
 	/**
 	 * Secrets:
-	 *   REGISTRY_AUTHS — JSON map of upstream credentials, e.g.
-	 *     {"ghcr.io": "user:pat", "registry.example.com:5000": "user:pass"}
-	 *   Set with: npx wrangler secret put REGISTRY_AUTHS
+	 *   PROXY_TOKEN    — shared client token for `docker login` (required unless PROXY_AUTH=off)
+	 *   REGISTRY_AUTHS — optional JSON map of per-member upstream credentials, e.g.
+	 *                    {"ghcr.io": "user:pat", "registry.example.com:5000": "user:pass"}
+	 *   Set with: npx wrangler secret put PROXY_TOKEN
 	 */
 }

@@ -1,98 +1,117 @@
-# OCI Registry Proxy
+# OCI Registry Aggregator
 
-A transparent OCI Distribution Spec v1 proxy on Cloudflare Workers. Pull and
-push through one endpoint to any upstream registry — Docker Hub, ghcr.io,
-quay.io, or your own.
+A pull-only OCI Distribution aggregator on Cloudflare Workers. One URL serves
+every registry — Docker Hub, ghcr.io, quay.io, or your own — with mirror-group
+fallback, digest racing, and edge caching. Push is not proxied.
 
-## How clients address it
-
-Docker, crane, containerd and friends treat the proxy host itself as a
-registry, so the upstream appears as the first path segment (ECR
-pull-through-cache convention):
+The rule that shapes the design: content addressed by **digest** is identical
+on every mirror, so those requests are raced; **tags** may lag on mirrors, so
+those fall back through the group in order.
 
 ```bash
-docker pull proxy.example.com/library/nginx:latest          # Docker Hub (default)
+docker login proxy.example.com            # password = PROXY_TOKEN
+docker pull proxy.example.com/library/nginx:latest
 docker pull proxy.example.com/ghcr.io/distribution/distribution:latest
 docker pull proxy.example.com/quay.io/prometheus/prometheus:latest
-
-docker login proxy.example.com
-docker tag nginx proxy.example.com/ghcr.io/me/nginx && docker push proxy.example.com/ghcr.io/me/nginx
 ```
 
-A path-prefix form is also served for tooling that speaks raw HTTP:
+Both client addressing styles work:
 
-```bash
-curl https://proxy.example.com/ghcr.io/v2/                  # ping
-curl https://proxy.example.com/ghcr.io/v2/<repo>/manifests/latest
-```
+- **Embedded** (docker/crane/containerd): the registry is the first path
+  segment — `proxy.example.com/ghcr.io/owner/repo:latest`
+- **Path prefix** (raw HTTP tooling): `proxy.example.com/ghcr.io/v2/owner/repo/manifests/latest`
 
-## What the proxy does
+## How pulls are served
 
-- **Transparent pass-through** — request/response bodies stream through
-  (chunked PATCH uploads included); digests arrive byte-exact.
-- **Auth relay** — upstream `WWW-Authenticate` realms are rewritten to
-  `/token/{registry}`; the relay forwards credentials/scope to the real token
-  endpoint (anonymous pulls work out of the box). Scopes computed from the
-  proxied path (`repository:ghcr.io/owner/repo:pull`) are rewritten to the
-  upstream's view (`repository:owner/repo:pull`).
-- **Wildcard ping** — the bare `/v2/` ping challenges with a wildcard realm
-  (`/token/-`) so clients don't lock onto the wrong registry's auth before the
-  real registry is known from the resource path.
-- **Upload Location rewriting** — same-host upload Locations point back
-  through the proxy; with `REWRITE_ALL_LOCATIONS=true` cross-host Locations
-  are relayed via `/-/up/{base64url}` instead of leaking upstream hosts.
-- **GET/HEAD retry** — one retry on transient network failures.
-- **Blob edge cache** — blobs are digest-addressed and immutable, so GET/HEAD
-  responses are cached in Cloudflare's edge cache (Cache API, free, no
-  capacity management). Repeat pulls are served from the edge and never touch
-  the upstream registry. The cache is keyed by registry + repo + digest and
-  **disabled per-registry when upstream credentials are configured**
-  (`REGISTRY_AUTHS`), so credential-protected content can never become
-  publicly retrievable. Registries that already serve blobs from
-  Cloudflare's own edge (Docker Hub, Quay) are excluded — proxy-caching them
-  only adds a Worker hop and a cache lookup without shortening any path.
-  Range requests bypass the cache. Objects above the 512 MB edge-cache limit
-  simply stay uncached.
+| Request | Strategy |
+|---|---|
+| Manifest by **tag** | Members tried in order (canonical first); first success wins |
+| Manifest by **digest** | All members race; first success wins, losers are cancelled |
+| Blob (always digest) | Hedged: the leading member answers or the rest join after 150 ms |
+| Tags list / referrers | Sequential fallback, never cached |
 
-## Configuration (`wrangler.json` vars)
+Members that fail (network error, 5xx, 429, auth broken) are penalized with
+exponential backoff (30 s → 120 s) and skipped while unhealthy — per edge
+location, with no external state. When every member is penalized, the group
+is retried anyway so it can recover.
 
-| Var | Default | Purpose |
+Responses are cached in Cloudflare's edge cache, keyed by **mirror group**
+(not by the member that answered):
+
+- Blobs and digest-addressed manifests: immutable, 30-day TTL
+- Tag-addressed manifests: short TTL (default 120 s, `MANIFEST_TAG_TTL`)
+- Range requests bypass the cache; nothing fetched with credentials is cached
+
+## Authentication
+
+The proxy is **fail-closed by default**:
+
+| Config | Behavior |
+|---|---|
+| `PROXY_TOKEN` secret set | Clients `docker login` with any username and the token as password; the proxy exchanges it for a short-lived signed bearer (1 h) |
+| nothing set | `/v2/*` answers 401 with setup instructions |
+| `PROXY_AUTH=off` | Open proxy — local development only |
+
+Upstream authentication is handled server-side: `REGISTRY_AUTHS` provides
+per-member credentials (anonymous otherwise; in open mode the client's Basic
+credentials are relayed). Clients never talk to upstream token endpoints.
+
+## Configuration
+
+| Variable | Default | Meaning |
 |---|---|---|
-| `DEFAULT_REGISTRY` | `docker.io` | Upstream for bare `/v2/` routes and repo paths without a registry-looking first segment. Docker Hub repos get the `library/` namespace applied. |
-| `ALLOWED_REGISTRIES` | `""` (all) | Comma-separated allowlist for `/{registry}/v2/...` and embedded addressing. |
-| `REWRITE_ALL_LOCATIONS` | `false` | Relay every upstream Location through the proxy. |
-| `INSECURE_REGISTRIES` | `""` | Comma-separated hosts contacted over plain http (localhost always is). |
-| `BLOB_CACHE` | `"true"` | Edge-cache blobs (GET/HEAD) from registries without configured credentials. Set `"false"` to disable. |
+| `DEFAULT_REGISTRY` | `docker.io` | Registry for bare `/v2/...` requests |
+| `MIRROR_GROUPS` | *(empty)* | JSON: `{"docker.io": ["docker.io", "docker.m.daocloud.io"]}` — ordered members per registry |
+| `ALLOWED_REGISTRIES` | *(empty)* | Comma-separated allowlist for client-chosen registries (the default registry is exempt) |
+| `INSECURE_REGISTRIES` | *(empty)* | Hosts contacted over plain http (localhost always is) |
+| `PROXY_AUTH` | *(empty)* | `off` disables proxy authentication |
+| `MANIFEST_TAG_TTL` | `120` | Seconds a tag manifest may be served from cache |
+| `BLOB_CACHE` | `true` | `false` disables the edge cache |
 
-Upstream credentials (server-side Basic auth used when the client sends none):
+Secrets (`npx wrangler secret put ...`):
 
-```bash
-npx wrangler secret put REGISTRY_AUTHS   # {"ghcr.io": "user:pat", "registry.example.com:5000": "user:pass"}
-```
+- `PROXY_TOKEN` — shared client token for `docker login`
+- `REGISTRY_AUTHS` — JSON of per-member upstream credentials, e.g. `{"ghcr.io": "user:pat"}`
 
-`GET /api/status` reports the effective configuration.
-
-## Platform notes
-
-- Workers request-body limit is 100 MB (Free/Pro) / 200 MB (Business) per
-  request; larger layers must be uploaded in chunks (docker/containerd do) or
-  the plan limit raised.
-- Blob CDN redirects (302) are followed server-side for GET/HEAD, so clients
-  never see cross-host URLs.
-- Client reference grammar forbids `:` in repository path segments, so
-  embedded addressing can't name registries with ports; use the path-prefix
-  routes for those.
-
-## Development
+## Local development
 
 ```bash
+cp .dev.vars.example .dev.vars   # open proxy + e2e mirror group
 npm install
-npm run dev                       # vite dev server (React + worker)
-node scripts/mock-registry.mjs 5100          # mock upstream (bearer auth)
-npx wrangler dev --port 8787 &               # proxy (serves the built worker)
-node scripts/e2e.mjs http://127.0.0.1:8787 localhost:5100
+npm run dev                      # vite dev server on :8787
+
+# terminal 2: seeded mock registry
+node scripts/mock-registry.mjs 5100 --seed --insecure-auth
+
+# terminal 3: smoke test (pull, cache, fallback, 405 on push)
+node scripts/e2e.mjs
 ```
 
-E2E covers pull (challenge → token → manifest → blobs → range), push
-(POST → PATCH → PUT → manifest PUT, monolithic POST), both addressing forms,
-and the status API.
+Quality gates:
+
+```bash
+npm test            # unit + integration tests (vitest)
+npm run coverage    # coverage report (thresholds: 80% everywhere)
+npm run lint
+npm run check       # tsc + vite build + wrangler deploy --dry-run
+```
+
+## Architecture
+
+```
+src/worker/
+  index.ts     Hono routes (thin)
+  settings.ts  env → typed, memoized settings (mirror groups, auth mode, TTLs)
+  registry.ts  upstream/group model, resource path parsing, docker library/ rule
+  upstream.ts  upstream auth: challenge parsing, realm discovery, token cache
+  strategy.ts  pull strategies (sequential / race / hedged) + member health
+  auth.ts      proxy auth: shared-token exchange, HMAC-signed bearers
+  caching.ts   edge-cache keys (group-namespaced) and TTL policy
+  proxy.ts     handlers gluing it together (pull-only gate, auth gate, cache)
+  util.ts      LRU map, base64url, constant-time compare, sha256
+```
+
+Limits worth knowing: the Workers Cache API is best-effort with a 512 MB
+per-object cap (oversized layers stream uncached), and Docker Hub anonymous
+rate limits apply from shared egress IPs — mirror groups and the edge cache
+are the mitigation.

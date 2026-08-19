@@ -1,17 +1,11 @@
 import { Hono } from "hono";
-import {
-	registryProxy,
-	statusHandler,
-	tokenRelay,
-	upstreamRelay,
-	type WorkerEnv,
-} from "./proxy";
+import { authEndpoint, registryProxy, statusHandler, type WorkerEnv } from "./proxy";
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
 app.get("/api/status", statusHandler);
-app.all("/token/:registry", tokenRelay);
-app.all("/-/up/:url", upstreamRelay);
+/** Token endpoint behind our own auth challenge (docker login lands here). */
+app.all("/-/auth", authEndpoint);
 app.all("/v2", registryProxy({ fromPath: false }));
 app.all("/v2/*", registryProxy({ fromPath: false }));
 app.all("/:registry/v2", registryProxy({ fromPath: true }));

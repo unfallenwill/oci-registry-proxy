@@ -1,27 +1,25 @@
 #!/usr/bin/env node
 /**
- * Mock OCI registry for local E2E testing of the proxy.
- * Implements enough of the OCI Distribution API to exercise pull and push:
+ * Mock OCI registry for local E2E testing of the pull-only aggregator.
+ * Implements the read side of the OCI Distribution API:
  *   GET/HEAD /v2/                       -> 401 Bearer (or 200 with --insecure-auth)
  *   GET      /token?<query>             -> token endpoint (echoes scope)
  *   GET/HEAD /v2/<name>/manifests/<ref> -> manifest
  *   GET/HEAD /v2/<name>/blobs/<digest>  -> blob (supports Range)
- *   POST     /v2/<name>/blobs/uploads/  -> 202 Location (or 201 for single-POST monolithic)
- *   PATCH/PUT /v2/<name>/blobs/uploads/<id>[?digest=] -> 202/201
- *   PUT      /v2/<name>/manifests/<ref> -> 201
  *
- * Usage: node scripts/mock-registry.mjs <port> [--insecure-auth]
+ * `--seed` writes a fixture image (repo "hello", tag "v1") into the store
+ * before serving, so tests do not need push support anywhere.
+ *
+ * Usage: node scripts/mock-registry.mjs <port> [--insecure-auth] [--seed]
  */
 
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import {
 	createReadStream,
-	createWriteStream,
 	existsSync,
 	mkdirSync,
 	readFileSync,
-	renameSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -35,14 +33,45 @@ const allowAnonymous = process.argv.includes("--insecure-auth");
 const store = join(root, "..", ".tmp-registry-store");
 const blobsDir = join(store, "blobs");
 const manifestsDir = join(store, "manifests");
-mkdirSync(blobsDir, { recursive: true });
-mkdirSync(manifestsDir, { recursive: true });
-
-function blobPath(digest) {
-	return join(blobsDir, digest.replace(":", "-"));
-}
 
 const sha256 = (buf) => "sha256:" + createHash("sha256").update(buf).digest("hex");
+
+const blobPath = (digest) => join(blobsDir, digest.replace(":", "-"));
+
+function seed() {
+	mkdirSync(blobsDir, { recursive: true });
+	const configBuf = Buffer.from(
+		JSON.stringify({ architecture: "amd64", os: "linux", rootfs: { type: "layers", diff_ids: [] } }),
+	);
+	const layerBuf = Buffer.from("e2e-test-layer-content");
+	const manifestBuf = Buffer.from(
+		JSON.stringify({
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.manifest.v1+json",
+			config: {
+				mediaType: "application/vnd.oci.image.config.v1+json",
+				digest: sha256(configBuf),
+				size: configBuf.length,
+			},
+			layers: [
+				{
+					mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+					digest: sha256(layerBuf),
+					size: layerBuf.length,
+				},
+			],
+		}),
+	);
+	writeFileSync(blobPath(sha256(configBuf)), configBuf);
+	writeFileSync(blobPath(sha256(layerBuf)), layerBuf);
+	const dir = join(manifestsDir, "hello");
+	mkdirSync(dir, { recursive: true });
+	for (const ref of ["v1", sha256(manifestBuf)]) {
+		writeFileSync(join(dir, ref), manifestBuf);
+		writeFileSync(`${join(dir, ref)}.ct`, "application/vnd.oci.image.manifest.v1+json");
+	}
+	console.log(`seeded hello:v1 (${sha256(manifestBuf).slice(7, 19)}…)`);
+}
 
 function send(res, status, headers, body) {
 	res.writeHead(status, headers);
@@ -69,14 +98,10 @@ function unauthorized(req, res) {
 	return true;
 }
 
-/** Consume the request body into memory, streaming each chunk to onChunk. */
-function readBody(req, onChunk) {
+function readBody(req) {
 	return new Promise((resolve) => {
 		const chunks = [];
-		req.on("data", (c) => {
-			chunks.push(c);
-			onChunk?.(c);
-		});
+		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => resolve(Buffer.concat(chunks)));
 	});
 }
@@ -126,26 +151,6 @@ const server = createServer((req, res) => {
 		return;
 	}
 
-	if (m && req.method === "PUT") {
-		if (unauthorized(req, res)) return;
-		const [, name, ref] = m;
-		readBody(req).then((data) => {
-			const dir = join(manifestsDir, name);
-			mkdirSync(dir, { recursive: true });
-			writeFileSync(join(dir, ref), data);
-			writeFileSync(
-				`${join(dir, ref)}.ct`,
-				req.headers["content-type"] ?? "application/vnd.oci.image.manifest.v1+json",
-			);
-			const digest = sha256(data);
-			send(res, 201, {
-				location: `/v2/${name}/manifests/${ref}`,
-				"docker-content-digest": digest,
-			});
-		});
-		return;
-	}
-
 	m = /^\/v2\/(.+)\/blobs\/(sha256:[a-f0-9]{64})$/.exec(path);
 	if (m && (req.method === "GET" || req.method === "HEAD")) {
 		if (unauthorized(req, res)) return;
@@ -184,72 +189,12 @@ const server = createServer((req, res) => {
 		return;
 	}
 
-	m = /^\/v2\/(.+)\/blobs\/uploads\/$/.exec(path);
-	if (m && req.method === "POST") {
-		if (unauthorized(req, res)) return;
-		const name = m[1];
-		const digest = url.searchParams.get("digest");
-		if (digest) {
-			// Single-POST monolithic upload
-			readBody(req).then((data) => {
-				if (sha256(data) !== digest) {
-					json(res, 400, { errors: [{ code: "DIGEST_INVALID", message: "digest mismatch" }] });
-					return;
-				}
-				writeFileSync(blobPath(digest), data);
-				send(res, 201, { location: `/v2/${name}/blobs/${digest}`, "docker-content-digest": digest });
-			});
-			return;
-		}
-		const id = `upload-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-		writeFileSync(join(store, id), Buffer.alloc(0));
-		send(res, 202, {
-			location: `/v2/${name}/blobs/uploads/${id}`,
-			range: "0-0",
-			"docker-upload-uuid": id,
-		});
-		return;
-	}
-
-	m = /^\/v2\/(.+)\/blobs\/uploads\/([^/]+)$/.exec(path);
-	if (m && (req.method === "PATCH" || req.method === "PUT")) {
-		if (unauthorized(req, res)) return;
-		const [, name, id] = m;
-		const file = join(store, id);
-		const appending = existsSync(file);
-		const existing = appending ? readFileSync(file) : null;
-		const ws = createWriteStream(file, { flags: appending ? "a" : "w" });
-		readBody(req, (c) => ws.write(c)).then((data) => {
-			new Promise((resolve) => ws.end(resolve)).then(() => {
-				const digest = sha256(existing ? Buffer.concat([existing, data]) : data);
-				if (req.method === "PUT") {
-					const want = url.searchParams.get("digest");
-					if (want && want !== digest) {
-						json(res, 400, { errors: [{ code: "DIGEST_INVALID", message: "digest mismatch" }] });
-						return;
-					}
-					const final = want ?? digest;
-					renameSync(file, blobPath(final));
-					send(res, 201, {
-						location: `/v2/${name}/blobs/${final}`,
-						"docker-content-digest": final,
-					});
-				} else {
-					send(res, 202, {
-						location: `/v2/${name}/blobs/uploads/${id}`,
-						range: `0-${statSync(file).size - 1}`,
-						"docker-upload-uuid": id,
-					});
-				}
-			});
-		});
-		return;
-	}
-
 	readBody(req).then(() => {
 		json(res, 404, { errors: [{ code: "NOT_FOUND", message: `no route ${req.method} ${path}` }] });
 	});
 });
+
+if (process.argv.includes("--seed")) seed();
 
 server.listen(port, "127.0.0.1", () => {
 	console.log(

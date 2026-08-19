@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git ls-files | head -50 && echo \"---\" && find src -type f | xargs wc -l)",
+      "WebFetch(*)",
+      "Bash(ls /home/hicaosen/GitHub/oci-registry-proxy/src/ && wc -l /home/hicaosen/GitHub/oci-registry-proxy/src/*.ts)",
+      "Bash(node scripts/mock-registry.mjs > /tmp/mock.log 2>&1 &\nsleep 1 && curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:5100/v2/)",
+      "Bash(npx wrangler dev --port 8787 > /tmp/wrangler-dev.log 2>&1 &\nsleep 8 && curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8787/api/status)",
+      "Bash(node scripts/mock-registry.mjs > /tmp/mock.log 2>&1 &\nsleep 1\nnpx wrangler dev --port 8787 > /tmp/wrangler-dev.log 2>&1 &\nsleep 8\nnode scripts/e2e.mjs 2>&1 | grep -E \"\\(FAIL|ALL PASS|edge cache\\)\")"
+    ]
+  }
+}
