@@ -13,12 +13,12 @@
 	"vars": {
 		/** Registry used for bare "/v2/..." requests. Also always allowed elsewhere. */
 		"DEFAULT_REGISTRY": "docker.io",
-		/** Optional comma-separated allowlist for client-chosen registries. Empty = allow all. */
-		"ALLOWED_REGISTRIES": "",
+		/** Allowlist for client-chosen registries: the common public registries,
+		 *  so the open proxy cannot relay arbitrary private registries. */
+		"ALLOWED_REGISTRIES": "docker.io,ghcr.io,quay.io,gcr.io,registry.k8s.io,k8s.m.daocloud.io",
 		/** Mirror groups: JSON mapping registry name -> ordered member list.
-		 *  Members are tried in order for tag lookups and raced for digest lookups.
-		 *  Example: {"docker.io": ["docker.io", "docker.m.daocloud.io"]} */
-		"MIRROR_GROUPS": "",
+		 *  Members are tried in order for tag lookups and raced for digest lookups. */
+		"MIRROR_GROUPS": "{\"docker.io\":[\"docker.io\",\"docker.m.daocloud.io\",\"docker.1ms.run\"]}",
 		/** Comma-separated hosts to contact over plain http (insecure; localhost is always http). */
 		"INSECURE_REGISTRIES": "",
 		/** "off" disables proxy authentication (local development only). */
