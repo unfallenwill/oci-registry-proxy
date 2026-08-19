@@ -3,7 +3,7 @@
   "description": "Transparent OCI Distribution (pull & push) proxy on Cloudflare Workers",
   "license": "MIT",
   "dependencies": {
-    "hono": "4.11.1",
+    "hono": "^4.13.3",
     "react": "19.2.1",
     "react-dom": "19.2.1"
   },
