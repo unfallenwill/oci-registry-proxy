@@ -155,7 +155,11 @@ export function registryProxy(opts: { fromPath: boolean }) {
 		let raw: string | undefined;
 		let apiPath = inUrl.pathname;
 		if (opts.fromPath) {
-			raw = c.req.param("registry").toLowerCase();
+			const param = c.req.param("registry");
+			if (param === undefined) {
+				return ociError(404, "NOT_FOUND", "missing registry path segment");
+			}
+			raw = param.toLowerCase();
 			apiPath = inUrl.pathname.slice(`/${raw}`.length) || "/";
 		} else {
 			const embedded = /^\/v2\/([^/]+)\//.exec(apiPath);

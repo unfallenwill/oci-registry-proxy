@@ -20,7 +20,7 @@ const GITHUB_URL = "https://github.com/unfallenwill/oci-registry-proxy";
 const registryHost = window.location.origin.replace(/^https?:\/\//, "");
 
 /** One command line with a copy affordance — the whole point of this page. */
-function Cmd({ children }: { children: string }) {
+function Cmd({ cmd }: { cmd: string }) {
 	const [copied, setCopied] = useState(false);
 	const flash = () => {
 		setCopied(true);
@@ -28,12 +28,12 @@ function Cmd({ children }: { children: string }) {
 	};
 	const copy = async () => {
 		try {
-			await navigator.clipboard.writeText(children);
+			await navigator.clipboard.writeText(cmd);
 			flash();
 		} catch {
 			// Clipboard API unavailable (insecure context): legacy fallback.
 			const ta = document.createElement("textarea");
-			ta.value = children;
+			ta.value = cmd;
 			ta.style.position = "fixed";
 			ta.style.opacity = "0";
 			document.body.appendChild(ta);
@@ -44,7 +44,7 @@ function Cmd({ children }: { children: string }) {
 	};
 	return (
 		<div className="cmd">
-			<code>{children}</code>
+			<code>{cmd}</code>
 			<button className={`copy${copied ? " copied" : ""}`} onClick={copy}>
 				{copied ? "copied" : "copy"}
 			</button>
@@ -109,14 +109,14 @@ function App() {
 					{status?.authMode === "token" && (
 						<>
 							<Comment>Login once — any username, password is the proxy token</Comment>
-							<Cmd>docker login {host}</Cmd>
+							<Cmd cmd={`docker login ${host}`} />
 						</>
 					)}
 					<Comment>Docker Hub (default registry, with its mirror group)</Comment>
-					<Cmd>docker pull {host}/library/nginx:latest</Cmd>
+					<Cmd cmd={`docker pull ${host}/library/nginx:latest`} />
 					<Comment>Any registry, via embedded addressing or path prefix</Comment>
-					<Cmd>docker pull {host}/ghcr.io/distribution/distribution:latest</Cmd>
-					<Cmd>curl {host}/quay.io/v2/prom/prometheus/manifests/latest</Cmd>
+					<Cmd cmd={`docker pull ${host}/ghcr.io/distribution/distribution:latest`} />
+					<Cmd cmd={`curl ${host}/quay.io/v2/prom/prometheus/manifests/latest`} />
 				</div>
 			</section>
 
