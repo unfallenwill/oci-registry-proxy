@@ -1,6 +1,6 @@
-# OCI Registry Aggregator
+# OCI Registry Proxy
 
-A pull-only OCI Distribution aggregator on Cloudflare Workers. One URL serves
+A pull-only OCI Distribution proxy on Cloudflare Workers. One URL serves
 every registry — Docker Hub, ghcr.io, quay.io, or your own — with mirror-group
 fallback, digest racing, and edge caching. Push is not proxied.
 

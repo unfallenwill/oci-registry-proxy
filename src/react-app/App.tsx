@@ -90,9 +90,9 @@ function App() {
 		<main className="page">
 			<header>
 				<div>
-					<h1>OCI Registry Aggregator</h1>
+					<h1>OCI Registry Proxy</h1>
 					<p className="tagline">
-						Pull-only OCI Distribution aggregator on Cloudflare Workers: one URL, any
+						Pull-only OCI Distribution proxy on Cloudflare Workers: one URL, any
 						registry — mirror fallback, digest racing, edge caching. Push is not proxied.
 					</p>
 				</div>

@@ -326,7 +326,7 @@ describe("edge cache", () => {
 });
 
 describe("statusHandler", () => {
-	it("reports the aggregator configuration", async () => {
+	it("reports the proxy configuration", async () => {
 		const h = harness(() => json({}), {
 			MIRROR_GROUPS: '{"docker.io": ["docker.io", "docker.m.daocloud.io"]}',
 			PROXY_AUTH: "off",
