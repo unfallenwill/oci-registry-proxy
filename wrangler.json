@@ -22,7 +22,7 @@
 		/** Comma-separated hosts to contact over plain http (insecure; localhost is always http). */
 		"INSECURE_REGISTRIES": "",
 		/** "off" disables proxy authentication (local development only). */
-		"PROXY_AUTH": "",
+		"PROXY_AUTH": "off",
 		/** Seconds a tag-addressed manifest may be served from the edge cache. */
 		"MANIFEST_TAG_TTL": "120",
 		/** "false" disables the edge cache. */
